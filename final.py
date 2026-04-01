@@ -31,8 +31,11 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+import base64
+from pathlib import Path
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
 from sklearn.metrics import (accuracy_score, precision_score, recall_score, 
                             f1_score, roc_auc_score, confusion_matrix)
 from sklearn.calibration import CalibratedClassifierCV
@@ -47,6 +50,8 @@ warnings.filterwarnings('ignore')
 
 RANDOM_STATE = 42
 np.random.seed(RANDOM_STATE)
+TARGET_COL = 'group  (control:0, AMI:1)'
+LEAKAGE_COL = 'sub-type for AMI( STEMI:0, NON-STEMI :1, control:2)'
 
 # ============================================================================
 # DATA LOADING
@@ -59,18 +64,13 @@ def load_and_preprocess_data(filepath):
     print("=" * 80)
     
     df = pd.read_excel(filepath)
-    print(f"Dataset shape: {df.shape}")
     df = df.drop_duplicates()
     
-    target_col = 'group  (control:0, AMI:1)'
-    leakage_col = 'sub-type for AMI( STEMI:0, NON-STEMI :1, control:2)'
-    
-    X = df.drop(columns=[target_col, leakage_col])
-    y = df[target_col]
+    X = df.drop(columns=[TARGET_COL, LEAKAGE_COL])
+    y = df[TARGET_COL]
     feature_names = X.columns.tolist()
     
-    print(f"⚠️  Removed sub-type column (prevents data leakage)")
-    print(f"Features: {len(feature_names)}")
+    print("Preprocessing complete")
     
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=RANDOM_STATE, stratify=y
@@ -80,9 +80,9 @@ def load_and_preprocess_data(filepath):
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test)
     
-    print(f"Train: {len(X_train)}, Test: {len(X_test)}\n")
+    print("Train/test split and scaling complete\n")
     
-    return X_train_scaled, X_test_scaled, y_train, y_test, feature_names, scaler
+    return X_train_scaled, X_test_scaled, y_train, y_test, feature_names, scaler, df
 
 
 def evaluate_model(y_true, y_pred, y_pred_proba, model_name):
@@ -111,10 +111,7 @@ def evaluate_model(y_true, y_pred, y_pred_proba, model_name):
         'AUC-ROC': auc_roc
     }
     
-    print(f"Accuracy:     {accuracy:.4f}")
-    print(f"Sensitivity:  {recall:.4f}")
-    print(f"Specificity:  {specificity:.4f}")
-    print(f"AUC-ROC:      {auc_roc:.4f}")
+    print("Evaluation complete")
     
     return results
 
@@ -440,7 +437,7 @@ def train_autogluon(X_train, X_test, y_train, y_test):
         
         results = evaluate_model(y_test, y_pred, y_pred_proba, "AutoGluon")
         
-        print(f"\n💡 AutoGluon automatically stacked {len(predictor.get_model_names())} models!")
+        print("\nAutoGluon ensemble training complete")
         
         return predictor, results
         
@@ -524,7 +521,7 @@ def train_smote_ensemble(X_train, X_test, y_train, y_test):
         smote = SMOTE(random_state=RANDOM_STATE)
         X_train_balanced, y_train_balanced = smote.fit_resample(X_train, y_train)
         
-        print(f"Original: {len(y_train)}, After SMOTE: {len(y_train_balanced)}")
+        print("SMOTE balancing complete")
         
         # Train ensemble on balanced data
         clf = BalancedRandomForestClassifier(
@@ -574,7 +571,7 @@ def train_cost_sensitive_xgboost(X_train, X_test, y_train, y_test):
         # This makes the model focus more on the positive (AMI) class
         scale_pos_weight = (y_train == 0).sum() / (y_train == 1).sum()
         
-        print(f"\nScale pos weight: {scale_pos_weight:.2f} (emphasizes AMI detection)")
+        print("\nCost-sensitive weighting enabled for AMI detection")
         
         clf = XGBClassifier(
             n_estimators=300,
@@ -853,17 +850,280 @@ def train_lightgbm_dart(X_train, X_test, y_train, y_test):
 
 
 # ============================================================================
-# COMPARISON
+# COMPARISON + VISUAL WEB REPORT
 # ============================================================================
+
+def create_dataset_overview_plot(df, output_path='dataset_overview.png'):
+    """Create graph-only dataset overview plot for the visual report."""
+    X = df.drop(columns=[TARGET_COL, LEAKAGE_COL], errors='ignore')
+    y = df[TARGET_COL]
+    class_labels = y.map({0: 'Control', 1: 'AMI'}).fillna('Unknown')
+    
+    numeric_X = X.select_dtypes(include=[np.number]).copy()
+    if numeric_X.empty:
+        numeric_X = pd.DataFrame({'placeholder': np.zeros(len(df))})
+    
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    
+    # Class distribution
+    sns.countplot(x=class_labels, ax=axes[0, 0], palette='Set2')
+    axes[0, 0].set_title('Class Distribution')
+    axes[0, 0].set_xlabel('Patient Group')
+    axes[0, 0].set_ylabel('Count')
+    
+    # Missing data profile
+    missing_ratio = X.isnull().mean().sort_values(ascending=False).head(12)
+    if missing_ratio.sum() > 0:
+        missing_ratio.plot(kind='bar', ax=axes[0, 1], color='salmon')
+        axes[0, 1].set_title('Missing Data by Feature')
+        axes[0, 1].set_ylabel('Missing Ratio')
+        axes[0, 1].tick_params(axis='x', rotation=75)
+    else:
+        axes[0, 1].text(
+            0.5, 0.5, 'No Missing Data Patterns Detected',
+            ha='center', va='center', fontsize=12
+        )
+        axes[0, 1].axis('off')
+    
+    # Correlation map of most varying features
+    top_var_features = numeric_X.var().sort_values(ascending=False).head(12).index.tolist()
+    if len(top_var_features) >= 2:
+        corr = numeric_X[top_var_features].corr()
+        sns.heatmap(corr, ax=axes[1, 0], cmap='coolwarm', center=0, cbar=True)
+        axes[1, 0].set_title('Feature Correlation Map')
+    else:
+        axes[1, 0].text(
+            0.5, 0.5, 'Not Enough Numeric Features for Correlation Map',
+            ha='center', va='center', fontsize=12
+        )
+        axes[1, 0].axis('off')
+    
+    # PCA landscape
+    pca_input = numeric_X[top_var_features] if top_var_features else numeric_X
+    pca_input = pca_input.fillna(pca_input.median(numeric_only=True))
+    if pca_input.shape[1] >= 2:
+        scaled = StandardScaler().fit_transform(pca_input)
+        reduced = PCA(n_components=2).fit_transform(scaled)
+        scatter = axes[1, 1].scatter(
+            reduced[:, 0],
+            reduced[:, 1],
+            c=y,
+            cmap='coolwarm',
+            alpha=0.7,
+            s=45
+        )
+        axes[1, 1].set_title('Patient Feature Landscape (PCA)')
+        axes[1, 1].set_xlabel('Component 1')
+        axes[1, 1].set_ylabel('Component 2')
+        legend_handles, _ = scatter.legend_elements()
+        axes[1, 1].legend(legend_handles, ['Control', 'AMI'], title='Class', loc='best')
+    else:
+        axes[1, 1].text(
+            0.5, 0.5, 'Not Enough Features for PCA View',
+            ha='center', va='center', fontsize=12
+        )
+        axes[1, 1].axis('off')
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    
+    return output_path
+
+
+def create_model_metrics_heatmap(results_df, output_path='model_metrics_heatmap.png'):
+    """Create compact heatmap view for model metrics."""
+    metric_columns = ['AUC-ROC', 'Accuracy', 'Sensitivity', 'Specificity', 'F1-Score', 'Precision']
+    heatmap_data = results_df.set_index('Model')[metric_columns]
+    
+    fig_height = max(6, len(results_df) * 0.45)
+    fig, ax = plt.subplots(figsize=(13, fig_height))
+    sns.heatmap(
+        heatmap_data,
+        cmap='YlGnBu',
+        linewidths=0.4,
+        cbar=True,
+        annot=False,
+        ax=ax
+    )
+    ax.set_title('Model Performance Heatmap')
+    ax.set_xlabel('Metrics')
+    ax.set_ylabel('Models')
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    
+    return output_path
+
+
+def _encode_image(image_path):
+    """Encode image to base64 for embedding in a self-contained HTML report."""
+    return base64.b64encode(Path(image_path).read_bytes()).decode('utf-8')
+
+
+def generate_visual_report(results_df, dataset_plot_path, comparison_plot_path, heatmap_plot_path,
+                           output_html='ami_visual_report.html'):
+    """Generate a small frontend-style HTML dashboard with graph-only outputs."""
+    top_models = results_df['Model'].head(3).tolist()
+    top_model_html = ''.join(f'<li>{model}</li>' for model in top_models)
+    
+    dataset_img = _encode_image(dataset_plot_path)
+    comparison_img = _encode_image(comparison_plot_path)
+    heatmap_img = _encode_image(heatmap_plot_path)
+    
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AMI Research Visual Dashboard</title>
+  <style>
+    :root {{
+      --bg: #f4f7fb;
+      --panel: #ffffff;
+      --ink: #1f2a37;
+      --accent: #0f766e;
+      --muted: #607080;
+      --border: #d8e1ea;
+    }}
+    body {{
+      margin: 0;
+      font-family: "Avenir Next", "Segoe UI", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 85% 10%, #c9f1e7 0%, transparent 28%),
+        radial-gradient(circle at 15% 0%, #d9e9ff 0%, transparent 30%),
+        var(--bg);
+      line-height: 1.45;
+    }}
+    .wrap {{
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 32px 20px 48px;
+    }}
+    .hero {{
+      background: linear-gradient(135deg, #0f766e, #166534);
+      color: #fff;
+      border-radius: 16px;
+      padding: 24px 26px;
+      box-shadow: 0 16px 40px rgba(15, 118, 110, 0.25);
+    }}
+    h1 {{
+      margin: 0;
+      font-size: 30px;
+      letter-spacing: 0.2px;
+    }}
+    .subtitle {{
+      margin-top: 8px;
+      color: #e6fffb;
+      max-width: 760px;
+    }}
+    .grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 16px;
+      margin-top: 18px;
+    }}
+    .card {{
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px 18px;
+      box-shadow: 0 8px 22px rgba(0, 0, 0, 0.05);
+    }}
+    h2 {{
+      margin: 0 0 10px;
+      color: var(--accent);
+      font-size: 20px;
+    }}
+    p {{
+      margin: 8px 0;
+      color: var(--muted);
+    }}
+    ul {{
+      margin: 8px 0 0;
+      padding-left: 20px;
+      color: var(--ink);
+    }}
+    .plot {{
+      margin-top: 16px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 12px;
+      box-shadow: 0 8px 22px rgba(0, 0, 0, 0.05);
+    }}
+    .plot img {{
+      display: block;
+      width: 100%;
+      border-radius: 10px;
+    }}
+    .foot {{
+      margin-top: 16px;
+      color: var(--muted);
+      font-size: 14px;
+    }}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <h1>AMI Research Visual Dashboard</h1>
+      <p class="subtitle">
+        Graph-first report for the AMI baseline and cutting-edge model suite.
+        This dashboard focuses on visual output instead of numeric console metrics.
+      </p>
+    </section>
+
+    <section class="grid">
+      <article class="card">
+        <h2>Data Pipeline</h2>
+        <p>Raw AMI data is cleaned, deduplicated, and split into train/test sets.</p>
+        <p>Leakage features are removed before training and standardized inputs are used for consistency.</p>
+      </article>
+      <article class="card">
+        <h2>Top Ranked Models</h2>
+        <ul>
+          {top_model_html}
+        </ul>
+      </article>
+      <article class="card">
+        <h2>Model Families Included</h2>
+        <p>Traditional baselines, ensemble methods, calibration, AutoML, and cost-sensitive approaches.</p>
+      </article>
+    </section>
+
+    <section class="plot">
+      <h2>Dataset Overview</h2>
+      <img alt="Dataset overview plots" src="data:image/png;base64,{dataset_img}" />
+    </section>
+    <section class="plot">
+      <h2>Model Comparison</h2>
+      <img alt="Model comparison plots" src="data:image/png;base64,{comparison_img}" />
+    </section>
+    <section class="plot">
+      <h2>Metrics Heatmap</h2>
+      <img alt="Model metrics heatmap" src="data:image/png;base64,{heatmap_img}" />
+    </section>
+
+    <p class="foot">Generated by final.py visual report mode.</p>
+  </div>
+</body>
+</html>
+"""
+    
+    Path(output_html).write_text(html, encoding='utf-8')
+    return output_html
+
 
 def compare_models(results_list):
     """Compare all models in the final suite"""
     print("\n" + "=" * 80)
-    print("FINAL MODEL COMPARISON (BASELINE + CUTTING-EDGE)")
+    print("CREATING VISUAL OUTPUTS")
     print("=" * 80)
     
     df = pd.DataFrame(results_list).sort_values('AUC-ROC', ascending=False)
-    print("\n" + df.to_string(index=False))
     
     # Visualization
     fig, axes = plt.subplots(2, 2, figsize=(15, 10))
@@ -895,13 +1155,16 @@ def compare_models(results_list):
     axes[1, 1].set_title('Final Suite: F1-Score', fontweight='bold')
     
     plt.tight_layout()
-    plt.savefig('final_comparison.png', dpi=300, bbox_inches='tight')
-    print("\n✓ Plot saved: final_comparison.png")
+    comparison_plot_path = 'final_comparison.png'
+    plt.savefig(comparison_plot_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
     
     df.to_csv('final_results.csv', index=False)
-    print("✓ Results saved: final_results.csv")
+    heatmap_plot_path = create_model_metrics_heatmap(df)
     
-    return df
+    print("Model comparison graphs saved")
+    
+    return df, comparison_plot_path, heatmap_plot_path
 
 
 # ============================================================================
@@ -912,27 +1175,8 @@ def main():
     print("\n" + "=" * 80)
     print("FINAL AMI ML SUITE: BASELINE + CUTTING-EDGE")
     print("=" * 80)
-    print("\nNORMAL BASELINE METHODS (10):")
-    print("1. Logistic Regression (LR)")
-    print("2. SVM (Linear)")
-    print("3. SVM (RBF)")
-    print("4. Decision Tree")
-    print("5. Random Forest")
-    print("6. Gradient Boosting (sklearn)")
-    print("7. XGBoost")
-    print("8. LightGBM")
-    print("9. CatBoost")
-    print("10. K-Nearest Neighbors")
-    print("\nCUTTING-EDGE METHODS (8):")
-    print("11. AutoGluon - AWS AutoML")
-    print("12. CatBoost with Ordered Boosting")
-    print("13. SMOTE + Ensemble")
-    print("14. Cost-Sensitive XGBoost")
-    print("15. Calibrated Classifier")
-    print("16. Voting Classifier")
-    print("17. Stacking Meta-Ensemble")
-    print("18. LightGBM with DART")
-    print("\nRunning complete final model suite for comparison.")
+    print("\nRunning baseline + cutting-edge model families.")
+    print("Final output will be visual-first (graphs + HTML dashboard).")
     
     # Load data
     import os
@@ -941,7 +1185,7 @@ def main():
     else:
         filepath = input("\nEnter path to dataset: ").strip().strip('"').strip("'")
     
-    X_train, X_test, y_train, y_test, feature_names, scaler = load_and_preprocess_data(filepath)
+    X_train, X_test, y_train, y_test, feature_names, scaler, raw_df = load_and_preprocess_data(filepath)
     
     all_results = []
     
@@ -1032,23 +1276,28 @@ def main():
     
     # Compare
     if all_results:
-        df = compare_models(all_results)
+        dataset_plot_path = create_dataset_overview_plot(raw_df)
+        df, comparison_plot_path, heatmap_plot_path = compare_models(all_results)
+        report_path = generate_visual_report(
+            df,
+            dataset_plot_path,
+            comparison_plot_path,
+            heatmap_plot_path
+        )
         
         print("\n" + "=" * 80)
-        print("TOP 3 FINAL-SUITE METHODS")
+        print("TOP RANKED MODELS")
         print("=" * 80)
-        for i, (idx, row) in enumerate(df.head(3).iterrows(), 1):
-            print(f"\n{i}. {row['Model']}")
-            print(f"   AUC-ROC: {row['AUC-ROC']:.4f}")
-            print(f"   Accuracy: {row['Accuracy']:.4f}")
+        for model_name in df.head(3)['Model'].tolist():
+            print(f"- {model_name}")
         
         print("\n" + "=" * 80)
         print("KEY INSIGHTS")
         print("=" * 80)
         print("\n✓ Includes both normal baseline and cutting-edge methods")
-        print("✓ Lets you compare classic vs modern techniques in one run")
-        print("✓ Cost-sensitive and calibrated methods are clinically relevant")
-        print("✓ Expected range typically spans broad baseline-to-advanced performance")
+        print("✓ Outputs are now graph-first with minimal console metrics")
+        print("✓ Visual dashboard includes data overview and model comparisons")
+        print(f"✓ Open '{report_path}' in your browser to view the full frontend-style report")
     
     print("\n" + "=" * 80)
     print("✓ FINAL SUITE EVALUATION COMPLETE!")
