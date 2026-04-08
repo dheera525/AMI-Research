@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: ami-risk-predictor
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./webapp/Dockerfile
+    dockerContext: ./webapp
+    envVars:
+      - key: PORT
+        value: 7860
+    healthCheckPath: /api/
+    autoDeploy: true
