@@ -311,11 +311,11 @@ export default function Home() {
             <p style={{ color: "var(--muted)" }}>Loading features…</p>
           ) : (
             <>
-              {sections.map((sec, idx) => (
+              {sections.map((sec) => (
                 <details
                   key={sec.name}
                   className="section"
-                  open={idx === 0}
+                  open
                 >
                   <summary>
                     {sec.name}
@@ -414,7 +414,7 @@ export default function Home() {
 
         {/* ---------- Collapsible: leaderboard + winner metrics ---------- */}
         {metrics && (
-          <details className="panel section">
+          <details className="section big-section">
             <summary>
               Model leaderboard &amp; test metrics
               <span className="count">{orderedModels.length}</span>
