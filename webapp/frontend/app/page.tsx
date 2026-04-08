@@ -240,7 +240,15 @@ export default function Home() {
       const r = features.ranges[f];
       const sample = r.mean + r.std * (Math.random() * 2 - 1);
       const clamped = Math.max(r.min, Math.min(r.max, sample));
-      init[f] = String(Number(clamped.toFixed(3)));
+      // Snap categorical/integer features (e.g. sex 0/1) to a discrete value
+      // instead of emitting decimals like 0.77.
+      const isIntegerFeature =
+        Number.isInteger(r.min) &&
+        Number.isInteger(r.max) &&
+        r.max - r.min <= 10;
+      init[f] = isIntegerFeature
+        ? String(Math.round(clamped))
+        : String(Number(clamped.toFixed(3)));
     }
     setValues(init);
     setResult(null);
