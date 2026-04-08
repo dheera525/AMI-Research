@@ -286,12 +286,6 @@ export default function Home() {
           Predict <span className="accent">AMI risk</span> from a blood panel
         </h1>
         <div className="underline" />
-        <p>
-          Trained on 18 baseline + cutting-edge models in{" "}
-          <code>final.py</code>; the top {metrics?.top_k_served ?? 5} by AUC-ROC
-          are served live. Enter a patient&apos;s lab values and get a calibrated
-          probability of acute myocardial infarction with per-model agreement.
-        </p>
         {metrics && (
           <div style={{ marginTop: 18 }}>
             <span className="badge win">Winner: {metrics.winner}</span>
@@ -309,8 +303,8 @@ export default function Home() {
 
       {loadErr && <div className="error">{loadErr}</div>}
 
-      <div className="grid grid-2" style={{ marginTop: 12 }}>
-        {/* ---------- Left: form + result ---------- */}
+      <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 20 }}>
+        {/* ---------- Form + result ---------- */}
         <div className="panel">
           <h2>Patient values</h2>
           {!features ? (
@@ -418,14 +412,16 @@ export default function Home() {
           )}
         </div>
 
-        {/* ---------- Right: leaderboard ---------- */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-          <div className="panel">
-            <h2>Model leaderboard</h2>
-            {!metrics ? (
-              <p style={{ color: "var(--muted)" }}>Loading metrics…</p>
-            ) : (
-              orderedModels.map((m) => (
+        {/* ---------- Collapsible: leaderboard + winner metrics ---------- */}
+        {metrics && (
+          <details className="panel section">
+            <summary>
+              Model leaderboard &amp; test metrics
+              <span className="count">{orderedModels.length}</span>
+            </summary>
+            <div style={{ marginTop: 16 }}>
+              <h3 style={{ marginTop: 0 }}>Leaderboard (AUC-ROC)</h3>
+              {orderedModels.map((m) => (
                 <div
                   key={m.name}
                   className={`model-row ${
@@ -438,24 +434,22 @@ export default function Home() {
                   </div>
                   <div className="pct">{m.auc_roc.toFixed(3)}</div>
                 </div>
-              ))
-            )}
-            <p
-              style={{
-                color: "var(--muted)",
-                fontSize: 11,
-                marginTop: 12,
-                lineHeight: 1.5,
-              }}
-            >
-              Sorted by AUC-ROC on a held-out 20% test split. Top{" "}
-              {metrics?.top_k_served ?? 5} of 18 models are served.
-            </p>
-          </div>
+              ))}
+              <p
+                style={{
+                  color: "var(--muted)",
+                  fontSize: 11,
+                  marginTop: 8,
+                  lineHeight: 1.5,
+                }}
+              >
+                Sorted by AUC-ROC on a held-out 20% test split. Top{" "}
+                {metrics.top_k_served} of 18 models are served.
+              </p>
 
-          {metrics && (
-            <div className="panel">
-              <h2>Test metrics (winner)</h2>
+              <h3 style={{ marginTop: 22 }}>
+                Test metrics — {metrics.winner}
+              </h3>
               {(() => {
                 const w = metrics.models.find((m) => m.name === metrics.winner);
                 if (!w) return null;
@@ -478,14 +472,11 @@ export default function Home() {
                 ));
               })()}
             </div>
-          )}
-        </div>
+          </details>
+        )}
       </div>
 
       <p className="footer">
-        AMI Research · final.py serving bundle ·{" "}
-        {new Date().getFullYear()}
-        <br />
         For research and educational use only. Not intended for clinical
         diagnosis or treatment decisions.
       </p>
